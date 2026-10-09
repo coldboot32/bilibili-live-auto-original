@@ -1,5 +1,7 @@
 # 哔哩哔哩直播自动原画与码率统计
 
+[中文](#功能) | [English](#english)
+
 自用 Tampermonkey（油猴）脚本，当前版本 **2.1.1**。
 
 ## 功能
@@ -35,5 +37,49 @@
 脚本保留少量控制台日志及不可见诊断属性，用于排查切换失败。
 
 ## 许可证
+
+[MIT License](LICENSE) · Copyright (c) 2026 coldboot32
+
+---
+
+## English
+
+### Bilibili Live Auto Original Quality and Bitrate Statistics
+
+A personal Tampermonkey userscript. Current version: **2.1.1**.
+
+### Features
+
+- Selects Bilibili's Original quality (原画) through the player API when you enter a live room, without opening the quality menu.
+- Stops switching once the selection is confirmed, allowing you to change quality manually afterward.
+- Adds `Video Bitrate` and `Audio Bitrate` to the player's built-in statistics panel (视频统计信息).
+- Displays video and audio codec names, such as AV1, H.264, H.265, and AAC-LC.
+- Does not create an additional floating panel or upload statistics.
+
+### Installation
+
+1. Install and enable Tampermonkey, and enable userscript permissions as required by your browser.
+2. [Install the userscript](https://raw.githubusercontent.com/coldboot32/bilibili-live-auto-original/main/bilibili-auto-original-silent.user.js).
+3. Reload the Bilibili live room. If you already have an older version, replace its entire contents in the Tampermonkey editor, save, and reload.
+4. Open 视频统计信息 (video statistics) from the player's right-click menu to see the added information.
+
+The script matches `https://live.bilibili.com/*`. Automatic quality selection runs only on numeric room paths.
+
+### What the Bitrates Mean
+
+The added bitrates are calculated from fragmented MP4 segments received by the player: **encoded sample bytes × 8 ÷ sample media duration**. Video and audio are measured separately, using an average over approximately 10 seconds of recent media fragments. Units are decimal Kbps / Mbps.
+
+These values differ from the existing `Download Bitrate`, which measures download speed. The bitrate already shown in the audio information comes from stream metadata. The calculation excludes MP4 container overhead and should not be used directly to measure network bandwidth consumption.
+
+### Compatibility and Validation
+
+- The script depends on Bilibili's player API and statistics panel structure. Site updates may affect functionality.
+- Bitrate measurement requires a Media Source Extensions `SourceBuffer` on the page's main thread and readable initialization segments and fragment sample information. Native playback, playback inside a Worker, or unsupported fragment formats may show `N/A`.
+- The script runs at `document-start` to capture initialization segments. Reload the page after installing or updating it.
+- JavaScript syntax checks and local simulated-fragment tests have passed. End-to-end verification of the latest version in a real live stream has not yet been completed.
+
+The script retains a few console logs and invisible diagnostic attributes to help troubleshoot quality-switching failures.
+
+### License
 
 [MIT License](LICENSE) · Copyright (c) 2026 coldboot32
