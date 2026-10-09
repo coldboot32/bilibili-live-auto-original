@@ -33,3 +33,7 @@
 - 已通过 JavaScript 语法检查及本地模拟分片测试；尚未完成最新版在真实直播中的端到端验证。
 
 脚本保留少量控制台日志及不可见诊断属性，用于排查切换失败。
+
+## 许可证
+
+[MIT License](LICENSE) · Copyright (c) 2026 coldboot32
