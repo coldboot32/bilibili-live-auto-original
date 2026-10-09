@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哔哩哔哩直播自动原画（精简版）
 // @namespace    local.bilibili.auto-original
-// @version      2.2.0
+// @version      2.2.1
 // @author       coldboot32
 // @license      MIT
 // @description  静默选择原画，并在播放器统计面板显示音视频分片平均码率。
@@ -46,7 +46,7 @@ SOFTWARE.
   // 码率统计必须在播放器创建 SourceBuffer 之前安装。
   const updateBitratePanel = installBitratePanel();
   const report = value => {
-    if (document.documentElement) document.documentElement.dataset.biliAutoOriginal = '2.2.0:' + value;
+    if (document.documentElement) document.documentElement.dataset.biliAutoOriginal = '2.2.1:' + value;
   };
   report('started');
 
@@ -81,9 +81,12 @@ SOFTWARE.
 
       const now = Date.now();
       const label = document.querySelector('#live-player .selected-qn')?.textContent?.trim();
+      // 标签缺失或含义不明时不能推断已退出自动模式，必须明确显示原画。
+      const originalSelected = typeof label === 'string' &&
+        /^(?:\d+P\s*)?原画(?:\s*[（(][^）)]*[）)])?$/i.test(label) && !/自动/.test(label);
       // 即使自动模式恰好播放原画，也先调用一次接口，明确选择原画。
       if (state.attempts > 0 && now - state.lastAttempt >= 2000 &&
-          Number(info.quality) === Number(target.qn) && !/^自动/.test(label || '')) {
+          Number(info.quality) === Number(target.qn) && originalSelected) {
         state.done = true;
         state.pending = false;
         state.request = null;

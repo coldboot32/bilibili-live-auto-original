@@ -2,12 +2,13 @@
 
 [中文](#功能) | [English](#english)
 
-自用 Tampermonkey（油猴）脚本，当前版本 **2.2.0**。
+自用 Tampermonkey（油猴）脚本，当前版本 **2.2.1**。
 
 ## 功能
 
 - 进入直播间后，通过播放器接口选择原画，无需展开画质菜单。
 - 确认切换成功后停止自动切换，允许随后手动调整画质。
+- 确认需要画质编号匹配且页面明确显示原画标签；标签缺失、为空或仍显示自动时不会误报成功，最多尝试 5 次后报告未确认。
 - 面板异常不会中断自动原画；切换请求超过 10 秒后允许重试，最多尝试 5 次，并忽略迟到的旧请求回调。
 - 在播放器自带的“视频统计信息”面板中添加 `Video Bitrate`、`Audio Bitrate`。
 - 在视频和音频信息中显示当前编码，例如 AV1、H.264、H.265、AAC-LC。
@@ -58,12 +59,13 @@ node tests/regression.cjs
 
 ### Bilibili Live Auto Original Quality and Bitrate Statistics
 
-A personal Tampermonkey userscript. Current version: **2.2.0**.
+A personal Tampermonkey userscript. Current version: **2.2.1**.
 
 ### Features
 
 - Selects Bilibili's Original quality (原画) through the player API when you enter a live room, without opening the quality menu.
 - Stops switching once the selection is confirmed, allowing you to change quality manually afterward.
+- Confirmation requires both a matching quality code and an explicit Original label. Missing, empty, or automatic-mode labels never count as success; after up to five attempts, the script reports that switching could not be confirmed.
 - Panel failures do not interrupt quality selection. Switching requests time out after 10 seconds, with up to five attempts; callbacks from stale requests are ignored.
 - Adds `Video Bitrate` and `Audio Bitrate` to the player's built-in statistics panel (视频统计信息).
 - Displays video and audio codec names, such as AV1, H.264, H.265, and AAC-LC.

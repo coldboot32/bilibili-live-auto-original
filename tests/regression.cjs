@@ -62,7 +62,11 @@ function setup(options = {}) {
     unsafeWindow: { SourceBuffer, MediaSource, URL, WeakRef, livePlayer: player },
     document: { documentElement: { dataset: {} },
       getElementById(id) { if (panelFault) throw Error('DOM changed'); return elements.get(id); },
-      querySelector(selector) { return selector === '#live-player video' ? video : { textContent: info.quality === '10000' ? '原画' : '自动' }; } },
+      querySelector(selector) {
+        if (selector === '#live-player video') return video;
+        if (Object.prototype.hasOwnProperty.call(options, 'label')) return options.label == null ? null : { textContent: options.label };
+        return { textContent: info.quality === '10000' ? '原画' : '自动' };
+      } },
     location: { pathname: '/1' }, console: { info() {}, warn(...args) { warnings.push(args); } },
     Date: { now: () => now }, WeakMap, Map, ArrayBuffer, DataView, Uint8Array, Reflect, Promise };
   vm.runInNewContext(source, context);
@@ -79,6 +83,22 @@ function setup(options = {}) {
 }
 async function flush() { for (let i = 0; i < 8; i++) await Promise.resolve(); }
 async function run() {
+  for (const label of [null, '', '自动（原画）', '1080P 蓝光', '正在切换到原画', '原画（自动）']) {
+    const uncertain = setup({ label }); uncertain.info.quality = '10000'; uncertain.tick(2000);
+    assert.equal(uncertain.state.done, false, `Must not confirm label: ${label}`);
+    assert(!uncertain.context.document.documentElement.dataset.biliAutoOriginal.includes('confirmed:'));
+  }
+  for (const label of ['原画', '1080P 原画（高帧率）', '原画(高帧率)', '  原画  ']) {
+    const explicit = setup({ label }); explicit.info.quality = '10000'; explicit.tick(2000);
+    assert.equal(explicit.state.done, true, `Must confirm original label: ${label}`);
+    assert.equal(explicit.context.document.documentElement.dataset.biliAutoOriginal, '2.2.1:confirmed:10000');
+  }
+  const mismatched = setup({ label: '原画' }); mismatched.tick(2000); assert.equal(mismatched.state.done, false);
+  const unavailable = setup({ label: null }); unavailable.info.quality = '10000';
+  for (let i = 0; i < 5; i++) unavailable.tick(5000);
+  assert.equal(unavailable.state.attempts, 5); assert.equal(unavailable.state.done, true);
+  assert.equal(unavailable.context.document.documentElement.dataset.biliAutoOriginal, '2.2.1:failed');
+  console.log('PASS: confirmation requires explicit original label and matching quality; missing/empty/auto/unknown labels never confirm; retries remain bounded');
   let s = setup();
   s.fault(true); const before = s.reads(); s.tick(5000);
   assert(s.reads() > before);
@@ -103,7 +123,7 @@ async function run() {
   s.requests[1].reject(Error('old room')); await flush(); assert.equal(s.state.pending, true);
   for (let i = 0; i < 5; i++) s.tick(10000);
   assert.equal(s.state.attempts, 5); assert.equal(s.state.done, true); assert.equal(s.state.pending, false);
-  assert.equal(s.context.document.documentElement.dataset.biliAutoOriginal, '2.2.0:failed');
+  assert.equal(s.context.document.documentElement.dataset.biliAutoOriginal, '2.2.1:failed');
   s.requests[2].resolve({ code: 0 }); await flush(); assert.equal(s.state.pending, false);
   const completed = setup({ promise: true }); completed.info.quality = '10000'; completed.tick(2000);
   assert.equal(completed.state.done, true); assert.equal(completed.state.pending, false);
