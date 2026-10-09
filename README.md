@@ -2,15 +2,17 @@
 
 [中文](#功能) | [English](#english)
 
-自用 Tampermonkey（油猴）脚本，当前版本 **2.1.1**。
+自用 Tampermonkey（油猴）脚本，当前版本 **2.2.0**。
 
 ## 功能
 
 - 进入直播间后，通过播放器接口选择原画，无需展开画质菜单。
 - 确认切换成功后停止自动切换，允许随后手动调整画质。
+- 面板异常不会中断自动原画；切换请求超过 10 秒后允许重试，最多尝试 5 次，并忽略迟到的旧请求回调。
 - 在播放器自带的“视频统计信息”面板中添加 `Video Bitrate`、`Audio Bitrate`。
 - 在视频和音频信息中显示当前编码，例如 AV1、H.264、H.265、AAC-LC。
 - 不创建额外悬浮窗，不上传统计数据。
+- 码率按主播放器的 MediaSource 隔离，避免预览小窗等播放器覆盖数据。
 
 ## 安装
 
@@ -32,9 +34,19 @@
 - 脚本依赖哔哩哔哩播放器的接口和统计面板结构，网站更新可能影响功能。
 - 码率统计需要页面主线程的 Media Source Extensions `SourceBuffer`，并读取初始化段和分片样本信息。原生播放、Worker 内播放或未支持的分片格式可能显示 `N/A`。
 - 为捕获初始化段，脚本在 `document-start` 运行，安装或更新后需要刷新页面。
-- 已通过 JavaScript 语法检查及本地模拟分片测试；尚未完成最新版在真实直播中的端到端验证。
+- 支持初始化段、盒子头、分片元数据及 `mdat` 载荷跨多次 `appendBuffer` 追加。只缓存最多 2 MiB 的元数据，媒体载荷不缓存；大小为 0 的顶层盒子、超限元数据或损坏边界会停止该 SourceBuffer 的统计，显示 `N/A`。`abort` / `changeType` 会重置解析状态，必要时需重新收到初始化段才能恢复统计。
+- 来源关联依赖主线程 MediaSource 的 blob URL 或直接 `srcObject`，最多保留 256 个 URL 的弱引用；无法关联主播放器时显示 `N/A`，不会回退到其它播放器的数据。
+- 已通过 JavaScript 语法检查及覆盖上述五项问题的本地回归测试；尚未完成最新版在真实直播中的端到端验证。
 
 脚本保留少量控制台日志及不可见诊断属性，用于排查切换失败。
+
+## 本地测试
+
+无需第三方依赖，在仓库目录执行：
+
+```sh
+node tests/regression.cjs
+```
 
 ## 许可证
 
@@ -46,15 +58,17 @@
 
 ### Bilibili Live Auto Original Quality and Bitrate Statistics
 
-A personal Tampermonkey userscript. Current version: **2.1.1**.
+A personal Tampermonkey userscript. Current version: **2.2.0**.
 
 ### Features
 
 - Selects Bilibili's Original quality (原画) through the player API when you enter a live room, without opening the quality menu.
 - Stops switching once the selection is confirmed, allowing you to change quality manually afterward.
+- Panel failures do not interrupt quality selection. Switching requests time out after 10 seconds, with up to five attempts; callbacks from stale requests are ignored.
 - Adds `Video Bitrate` and `Audio Bitrate` to the player's built-in statistics panel (视频统计信息).
 - Displays video and audio codec names, such as AV1, H.264, H.265, and AAC-LC.
 - Does not create an additional floating panel or upload statistics.
+- Isolates bitrate statistics by the main player's MediaSource so other players, such as previews, cannot overwrite them.
 
 ### Installation
 
@@ -76,9 +90,19 @@ These values differ from the existing `Download Bitrate`, which measures downloa
 - The script depends on Bilibili's player API and statistics panel structure. Site updates may affect functionality.
 - Bitrate measurement requires a Media Source Extensions `SourceBuffer` on the page's main thread and readable initialization segments and fragment sample information. Native playback, playback inside a Worker, or unsupported fragment formats may show `N/A`.
 - The script runs at `document-start` to capture initialization segments. Reload the page after installing or updating it.
-- JavaScript syntax checks and local simulated-fragment tests have passed. End-to-end verification of the latest version in a real live stream has not yet been completed.
+- Handles initialization segments, box headers, fragment metadata, and `mdat` payloads split across multiple `appendBuffer` calls. Only metadata is buffered, with a 2 MiB limit; media payloads are skipped without buffering. Zero-sized top-level boxes, oversized metadata, and corrupt boundaries disable statistics for that SourceBuffer and show `N/A`. `abort` / `changeType` resets parsing state; a new initialization segment may be required to resume measurement.
+- Source association requires a main-thread MediaSource blob URL or direct `srcObject`. Up to 256 URL weak references are retained. If the main player cannot be associated, the script shows `N/A` instead of using another player's data.
+- JavaScript syntax checks and local regression tests covering the five issues above have passed. End-to-end verification of the latest version in a real live stream has not yet been completed.
 
 The script retains a few console logs and invisible diagnostic attributes to help troubleshoot quality-switching failures.
+
+### Local Tests
+
+No third-party dependencies are required. Run from the repository directory:
+
+```sh
+node tests/regression.cjs
+```
 
 ### License
 

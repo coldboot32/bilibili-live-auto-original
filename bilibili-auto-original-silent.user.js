@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哔哩哔哩直播自动原画（精简版）
 // @namespace    local.bilibili.auto-original
-// @version      2.1.1
+// @version      2.2.0
 // @author       coldboot32
 // @license      MIT
 // @description  静默选择原画，并在播放器统计面板显示音视频分片平均码率。
@@ -40,12 +40,13 @@ SOFTWARE.
   const KEY = '__biliAutoOriginalSilentLocal';
   if (window[KEY]) return;
   const state = { player: null, path: '', done: false, attempts: 0,
-    lastAttempt: 0, waiting: 0, pending: false };
+    lastAttempt: 0, interfaceWaitStart: null, interfaceWaitWarned: false,
+    errorCount: 0, pending: false, request: null, generation: 0, panelErrorAt: null };
   window[KEY] = state;
   // 码率统计必须在播放器创建 SourceBuffer 之前安装。
   const updateBitratePanel = installBitratePanel();
   const report = value => {
-    if (document.documentElement) document.documentElement.dataset.biliAutoOriginal = '2.1.1:' + value;
+    if (document.documentElement) document.documentElement.dataset.biliAutoOriginal = '2.2.0:' + value;
   };
   report('started');
 
@@ -54,19 +55,24 @@ SOFTWARE.
     const player = unsafeWindow.livePlayer;
     if (player !== state.player || location.pathname !== state.path) {
       Object.assign(state, { player, path: location.pathname, done: false,
-        attempts: 0, lastAttempt: 0, waiting: 0, pending: false });
+        attempts: 0, lastAttempt: 0, interfaceWaitStart: null, interfaceWaitWarned: false,
+        errorCount: 0, pending: false, request: null, generation: state.generation + 1 });
       report('waiting');
     }
     if (state.done) return;
     try {
       if (!player || typeof player.getPlayerInfo !== 'function' ||
-          typeof player.switchQuality !== 'function') {
-        if (++state.waiting === 60) {
+          (typeof player.switchQualityAsync !== 'function' && typeof player.switchQuality !== 'function')) {
+        if (state.interfaceWaitStart === null) state.interfaceWaitStart = Date.now();
+        if (!state.interfaceWaitWarned && Date.now() - state.interfaceWaitStart >= 60000) {
+          state.interfaceWaitWarned = true;
           report('api-unavailable');
           console.warn('[自动原画] 等待播放器接口超过60秒。');
         }
         return;
       }
+      state.interfaceWaitStart = null;
+      state.interfaceWaitWarned = false;
       const info = player.getPlayerInfo();
       if (!info?.playurl || !Array.isArray(info.qualityCandidates)) return;
       const target = info.qualityCandidates.find(q => Number(q.qn) === 10000) ||
@@ -79,9 +85,17 @@ SOFTWARE.
       if (state.attempts > 0 && now - state.lastAttempt >= 2000 &&
           Number(info.quality) === Number(target.qn) && !/^自动/.test(label || '')) {
         state.done = true;
+        state.pending = false;
+        state.request = null;
         report('confirmed:' + target.qn);
         console.info('[自动原画] 静默切换已确认：', target.desc, target.qn);
         return;
+      }
+      if (state.pending && state.request && now >= state.request.deadline) {
+        state.pending = false;
+        state.request = null;
+        report('switch-timeout');
+        console.warn('[自动原画] 切换请求超过10秒，允许重试。');
       }
       if (state.pending || (state.attempts > 0 && now - state.lastAttempt < 5000)) return;
       if (state.attempts >= 5) {
@@ -96,32 +110,63 @@ SOFTWARE.
       // 当前播放器严格比较 String(code) 与入参，必须传字符串。
       const switchMethod = typeof player.switchQualityAsync === 'function' ?
         player.switchQualityAsync : player.switchQuality;
+      const request = { generation: state.generation, deadline: now + 10000 };
+      state.request = request;
       const result = switchMethod.call(player, String(target.qn), target.hdrType ?? 0, false, 'auto-original-local');
       if (result && typeof result.then === 'function') {
         state.pending = true;
-        result.then(response => {
-          if (state.player !== player) return;
-          document.documentElement.dataset.biliAutoOriginalResult = JSON.stringify({
+        const isCurrent = () => state.request === request && state.generation === request.generation &&
+          state.player === player && state.path === location.pathname && !state.done;
+        Promise.resolve(result).then(response => {
+          if (!isCurrent()) return;
+          if (document.documentElement) document.documentElement.dataset.biliAutoOriginalResult = JSON.stringify({
             code: response?.code, msg: response?.msg,
             requested: String(target.qn), current: player.getPlayerInfo().quality
           });
           console.info('[自动原画] 切换接口返回：', response?.code, response?.msg);
-        }).catch(error => console.warn('[自动原画] 切换接口拒绝：', error))
-          .finally(() => { if (state.player === player) state.pending = false; });
+        }).catch(error => { if (isCurrent()) console.warn('[自动原画] 切换接口拒绝：', error); })
+          .finally(() => { if (isCurrent()) { state.pending = false; state.request = null; } });
+      } else {
+        state.request = null;
       }
     } catch (error) {
       report('error');
-      if (++state.waiting === 1) console.warn('[自动原画] 接口执行失败：', error);
+      if (++state.errorCount === 1) console.warn('[自动原画] 接口执行失败：', error);
     }
   }
-  state.timer = window.setInterval(() => { updateBitratePanel(); tick(); }, 1000);
+  state.timer = window.setInterval(() => {
+    try { updateBitratePanel(); } catch (error) {
+      const now = Date.now();
+      if (state.panelErrorAt === null || now - state.panelErrorAt >= 60000) {
+        state.panelErrorAt = now;
+        console.warn('[音视频码率] 面板更新失败，不影响自动原画：', error);
+      }
+    }
+    tick();
+  }, 1000);
   tick();
 
   function installBitratePanel() {
     const buffers = new WeakMap();
-    const latest = new Map();
+    const bufferOwners = new WeakMap();
+    const sources = new WeakMap();
+    const urls = new Map();
     const infoLabels = new WeakMap();
     let hookInstalled = false;
+
+    function sourceInfo(source) {
+      let info = sources.get(source);
+      if (!info) { info = { latest: new Map() }; sources.set(source, info); }
+      return info;
+    }
+
+    function activeInfo() {
+      const video = document.querySelector('#live-player video');
+      if (!video) return null;
+      if (video.srcObject && sources.has(video.srcObject)) return sources.get(video.srcObject);
+      const source = urls.get(video.currentSrc || video.src)?.deref();
+      return source ? sources.get(source) : null;
+    }
 
     // 仅读取 MP4 盒子，不复制或保留媒体内容，不改动播放器收到的字节。
     function boxes(view, start, end, visit) {
@@ -140,11 +185,9 @@ SOFTWARE.
       }
     }
 
-    function inspect(buffer, data) {
-      const view = ArrayBuffer.isView(data) ?
-        new DataView(data.buffer, data.byteOffset, data.byteLength) : new DataView(data);
-      let tracks = buffers.get(buffer);
-      if (!tracks) { tracks = new Map(); buffers.set(buffer, tracks); }
+    function parseMetadata(stream, data) {
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      const { tracks, latest } = stream;
       boxes(view, 0, view.byteLength, (type, start, end) => {
         if (type === 'moov') {
           for (const track of tracks.values()) {
@@ -226,27 +269,160 @@ SOFTWARE.
           while (track.samples.length > 1 && total - track.samples[0].seconds >= 10) {
             total -= track.samples.shift().seconds;
           }
+          // 极短分片也不能无限增加队列长度。
+          if (track.samples.length > 1200) track.samples.splice(0, track.samples.length - 1200);
           track.lastAt = Date.now();
           latest.set(track.kind, track);
         });
       });
     }
 
+    function resetStream(stream, clearTracks = false) {
+      stream.headerUsed = 0;
+      stream.headerNeeded = 8;
+      stream.remaining = 0;
+      stream.metadata = null;
+      stream.metadataUsed = 0;
+      stream.disabled = false;
+      for (const track of stream.tracks.values()) {
+        if (stream.latest.get(track.kind) === track) stream.latest.delete(track.kind);
+        track.samples = [];
+        track.lastAt = 0;
+      }
+      if (clearTracks) stream.tracks.clear();
+    }
+
+    function inspect(buffer, data) {
+      const owner = bufferOwners.get(buffer);
+      if (!owner) return; // 无法确定来源的 SourceBuffer 不混入统计。
+      let stream = buffers.get(buffer);
+      if (!stream) {
+        stream = { tracks: new Map(), latest: sourceInfo(owner).latest, header: new Uint8Array(16) };
+        resetStream(stream);
+        buffers.set(buffer, stream);
+      }
+      if (stream.disabled) return;
+      const bytes = ArrayBuffer.isView(data) ?
+        new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
+      const MAX_METADATA = 2 * 1024 * 1024;
+      try {
+        let position = 0, boxCount = 0;
+        while (position < bytes.length) {
+          if (stream.remaining > 0) {
+            const length = Math.min(stream.remaining, bytes.length - position);
+            if (stream.metadata) {
+              stream.metadata.set(bytes.subarray(position, position + length), stream.metadataUsed);
+              stream.metadataUsed += length;
+            }
+            // mdat 和其它非元数据盒子仅记录剩余长度，不缓存载荷。
+            position += length;
+            stream.remaining -= length;
+            if (stream.remaining === 0) {
+              if (stream.metadata) parseMetadata(stream, stream.metadata);
+              stream.metadata = null;
+            }
+            continue;
+          }
+          const length = Math.min(stream.headerNeeded - stream.headerUsed, bytes.length - position);
+          stream.header.set(bytes.subarray(position, position + length), stream.headerUsed);
+          position += length;
+          stream.headerUsed += length;
+          if (stream.headerUsed < stream.headerNeeded) continue;
+          const header = new DataView(stream.header.buffer);
+          let size = header.getUint32(0);
+          if (size === 1 && stream.headerNeeded === 8) { stream.headerNeeded = 16; continue; }
+          if (size === 1) size = header.getUint32(8) * 4294967296 + header.getUint32(12);
+          // size=0 延伸至流末尾；直播流中无法确定下一盒子的边界，停止统计而不猜测。
+          if (!Number.isSafeInteger(size) || size < stream.headerNeeded || ++boxCount > 10000) {
+            throw new Error('Unsupported MP4 box boundary');
+          }
+          const type = String.fromCharCode(...stream.header.subarray(4, 8));
+          if (type === 'moov' || type === 'moof') {
+            if (size > MAX_METADATA) throw new Error('MP4 metadata exceeds 2 MiB');
+            stream.metadata = new Uint8Array(size);
+            stream.metadata.set(stream.header.subarray(0, stream.headerNeeded));
+            stream.metadataUsed = stream.headerNeeded;
+          }
+          stream.remaining = size - stream.headerNeeded;
+          stream.headerUsed = 0;
+          stream.headerNeeded = 8;
+          if (stream.remaining === 0 && stream.metadata) {
+            parseMetadata(stream, stream.metadata);
+            stream.metadata = null;
+          }
+        }
+      } catch (_) {
+        resetStream(stream, true);
+        stream.disabled = true;
+      }
+    }
+
     try {
       const prototype = unsafeWindow.SourceBuffer?.prototype;
-      if (prototype && typeof prototype.appendBuffer === 'function') {
+      const constructors = [...new Set([unsafeWindow.MediaSource, unsafeWindow.ManagedMediaSource].filter(Boolean))];
+      const urlAPI = unsafeWindow.URL;
+      if (prototype && typeof prototype.appendBuffer === 'function' &&
+          constructors.length && typeof urlAPI?.createObjectURL === 'function' && typeof unsafeWindow.WeakRef === 'function') {
+        // 将 SourceBuffer、MediaSource、blob URL 和主 video 元素对应起来。
+        const hooked = new Set();
+        for (const Constructor of constructors) {
+          const mediaPrototype = Constructor.prototype;
+          // ManagedMediaSource 可能继承已挂钩的方法，避免重复包装。
+          const ownerPrototype = Object.prototype.hasOwnProperty.call(mediaPrototype, 'addSourceBuffer') ? mediaPrototype :
+            Object.getPrototypeOf(mediaPrototype);
+          if (!ownerPrototype || hooked.has(ownerPrototype)) continue;
+          hooked.add(ownerPrototype);
+          const add = ownerPrototype.addSourceBuffer;
+          if (typeof add !== 'function') continue;
+          ownerPrototype.addSourceBuffer = function () {
+            const buffer = Reflect.apply(add, this, arguments);
+            try { bufferOwners.set(buffer, this); sourceInfo(this); } catch (_) { /* 不影响创建 */ }
+            return buffer;
+          };
+          const remove = ownerPrototype.removeSourceBuffer;
+          if (typeof remove === 'function') ownerPrototype.removeSourceBuffer = function (buffer) {
+            const result = Reflect.apply(remove, this, arguments);
+            const stream = buffers.get(buffer);
+            if (stream) resetStream(stream, true);
+            buffers.delete(buffer);
+            bufferOwners.delete(buffer);
+            return result;
+          };
+        }
+        const createURL = urlAPI.createObjectURL;
+        urlAPI.createObjectURL = function (object) {
+          const url = Reflect.apply(createURL, this, arguments);
+          try {
+            if (constructors.some(Constructor => object instanceof Constructor)) {
+              urls.set(url, new unsafeWindow.WeakRef(object));
+              // 已撤销但仍在播放的 URL 也能关联来源；弱引用及数量上限防止积累。
+              if (urls.size > 256) urls.delete(urls.keys().next().value);
+            }
+          } catch (_) { /* 不影响 URL 创建 */ }
+          return url;
+        };
         const original = prototype.appendBuffer;
         prototype.appendBuffer = function (data) {
           const result = Reflect.apply(original, this, arguments);
           try { inspect(this, data); } catch (_) { /* 统计失败不影响播放 */ }
           return result;
         };
+        for (const method of ['abort', 'changeType']) {
+          const originalMethod = prototype[method];
+          if (typeof originalMethod !== 'function') continue;
+          prototype[method] = function () {
+            const result = Reflect.apply(originalMethod, this, arguments);
+            const stream = buffers.get(this);
+            if (stream) resetStream(stream, method === 'changeType');
+            return result;
+          };
+        }
         hookInstalled = true;
       }
     } catch (error) { console.warn('[音视频码率] 无法安装统计：', error); }
 
     function rate(kind) {
-      const track = latest.get(kind);
+      const track = activeInfo()?.latest.get(kind);
       if (!track || Date.now() - track.lastAt > 30000) return hookInstalled ? '等待分片 / N/A' : '当前播放内核不支持';
       const bytes = track.samples.reduce((sum, sample) => sum + sample.bytes, 0);
       const seconds = track.samples.reduce((sum, sample) => sum + sample.seconds, 0);
@@ -293,6 +469,7 @@ SOFTWARE.
           row?.remove();
           row = anchor.cloneNode(true);
           row.id = id;
+          if (!row.firstElementChild || !row.querySelector('.web-player-line-data')) continue;
           row.firstElementChild.textContent = label;
           row.title = '编码样本字节数 × 8 ÷ 媒体时长；近期约10秒分片的平均值，不是下载速度。';
           anchor.after(row);
