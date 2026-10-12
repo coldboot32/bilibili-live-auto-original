@@ -2,12 +2,13 @@
 
 [中文](#功能) | [English](#english)
 
-自用 Tampermonkey（油猴）脚本，当前版本 **2.2.1**。
+自用 Tampermonkey（油猴）脚本，当前版本 **2.2.2**。
 
 ## 功能
 
 - 进入直播间后，通过播放器接口选择原画，无需展开画质菜单。
 - 确认切换成功后停止自动切换，允许随后手动调整画质。
+- 暂停前明确显示原画时，恢复播放后观察 15 秒；如果退回“自动”画质，重新尝试切回原画。暂停前已手动选择其它画质，或恢复后明确显示其它固定画质时，不强制覆盖。
 - 确认需要画质编号匹配且页面明确显示原画标签；标签缺失、为空或仍显示自动时不会误报成功，最多尝试 5 次后报告未确认。
 - 面板异常不会中断自动原画；切换请求超过 10 秒后允许重试，最多尝试 5 次，并忽略迟到的旧请求回调。
 - 在播放器自带的“视频统计信息”面板中添加 `Video Bitrate`、`Audio Bitrate`。
@@ -37,7 +38,7 @@
 - 为捕获初始化段，脚本在 `document-start` 运行，安装或更新后需要刷新页面。
 - 支持初始化段、盒子头、分片元数据及 `mdat` 载荷跨多次 `appendBuffer` 追加。只缓存最多 2 MiB 的元数据，媒体载荷不缓存；大小为 0 的顶层盒子、超限元数据或损坏边界会停止该 SourceBuffer 的统计，显示 `N/A`。`abort` / `changeType` 会重置解析状态，必要时需重新收到初始化段才能恢复统计。
 - 来源关联依赖主线程 MediaSource 的 blob URL 或直接 `srcObject`，最多保留 256 个 URL 的弱引用；无法关联主播放器时显示 `N/A`，不会回退到其它播放器的数据。
-- 已通过 JavaScript 语法检查及覆盖上述五项问题的本地回归测试；尚未完成最新版在真实直播中的端到端验证。
+- 已通过 JavaScript 语法检查及本地回归测试，覆盖暂停恢复、延迟退回自动、重复暂停、手动画质保留、旧请求回调和分片统计；尚未完成最新版在真实直播中的端到端验证。
 
 脚本保留少量控制台日志及不可见诊断属性，用于排查切换失败。
 
@@ -59,12 +60,13 @@ node tests/regression.cjs
 
 ### Bilibili Live Auto Original Quality and Bitrate Statistics
 
-A personal Tampermonkey userscript. Current version: **2.2.1**.
+A personal Tampermonkey userscript. Current version: **2.2.2**.
 
 ### Features
 
 - Selects Bilibili's Original quality (原画) through the player API when you enter a live room, without opening the quality menu.
 - Stops switching once the selection is confirmed, allowing you to change quality manually afterward.
+- If Original was explicitly selected before pausing, watches for 15 seconds after playback resumes and retries Original when the label falls back to Auto. Other explicit quality selections before pausing or after resuming are preserved.
 - Confirmation requires both a matching quality code and an explicit Original label. Missing, empty, or automatic-mode labels never count as success; after up to five attempts, the script reports that switching could not be confirmed.
 - Panel failures do not interrupt quality selection. Switching requests time out after 10 seconds, with up to five attempts; callbacks from stale requests are ignored.
 - Adds `Video Bitrate` and `Audio Bitrate` to the player's built-in statistics panel (视频统计信息).
@@ -94,7 +96,7 @@ These values differ from the existing `Download Bitrate`, which measures downloa
 - The script runs at `document-start` to capture initialization segments. Reload the page after installing or updating it.
 - Handles initialization segments, box headers, fragment metadata, and `mdat` payloads split across multiple `appendBuffer` calls. Only metadata is buffered, with a 2 MiB limit; media payloads are skipped without buffering. Zero-sized top-level boxes, oversized metadata, and corrupt boundaries disable statistics for that SourceBuffer and show `N/A`. `abort` / `changeType` resets parsing state; a new initialization segment may be required to resume measurement.
 - Source association requires a main-thread MediaSource blob URL or direct `srcObject`. Up to 256 URL weak references are retained. If the main player cannot be associated, the script shows `N/A` instead of using another player's data.
-- JavaScript syntax checks and local regression tests covering the five issues above have passed. End-to-end verification of the latest version in a real live stream has not yet been completed.
+- JavaScript syntax checks and local regression tests covering pause/resume recovery, delayed Auto labels, repeated pauses, manual quality selections, stale callbacks, and fragment statistics have passed. End-to-end verification of the latest version in a real live stream has not yet been completed.
 
 The script retains a few console logs and invisible diagnostic attributes to help troubleshoot quality-switching failures.
 

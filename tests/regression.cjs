@@ -24,7 +24,8 @@ function fragment(override = false) {
 }
 function setup(options = {}) {
   let now = 10000, timer, serial = 0, reads = 0, appends = 0, panelFault = false;
-  const requests = [], warnings = [], elements = new Map();
+  const requests = [], warnings = [], elements = new Map(), listeners = new Map();
+  let switches = 0;
   class SourceBuffer {
     appendBuffer(data) { appends++; if (!data) throw Error('native append failure'); }
     abort() {}
@@ -49,6 +50,7 @@ function setup(options = {}) {
   const player = {
     getPlayerInfo() { reads++; return info; },
     switchQualityAsync(qn) {
+      switches++;
       assert.equal(qn, '10000');
       if (!options.promise) return undefined;
       let resolve, reject;
@@ -61,6 +63,7 @@ function setup(options = {}) {
   const context = { window: { setInterval(fn) { timer = fn; return 1; } },
     unsafeWindow: { SourceBuffer, MediaSource, URL, WeakRef, livePlayer: player },
     document: { documentElement: { dataset: {} },
+      addEventListener(name, callback, capture) { assert.equal(capture, true); listeners.set(name, callback); },
       getElementById(id) { if (panelFault) throw Error('DOM changed'); return elements.get(id); },
       querySelector(selector) {
         if (selector === '#live-player video') return video;
@@ -76,6 +79,8 @@ function setup(options = {}) {
     return { media, url, buffer };
   }
   return { context, player, info, elements, requests, warnings, SourceBuffer, video, URL, attach,
+    emit(name, target = video) { listeners.get(name)({ target }); },
+    label(value) { options.label = value; }, switches: () => switches,
     get state() { return context.window.__biliAutoOriginalSilentLocal; },
     tick(ms = 1000) { now += ms; timer(); }, reads: () => reads, appends: () => appends,
     fault(value) { panelFault = value; },
@@ -83,6 +88,40 @@ function setup(options = {}) {
 }
 async function flush() { for (let i = 0; i < 8; i++) await Promise.resolve(); }
 async function run() {
+  function confirmed(options) {
+    const s = setup(options); s.info.quality = '10000'; s.tick(2000);
+    assert.equal(s.state.done, true); return s;
+  }
+  const resumed = confirmed({ promise: true });
+  resumed.emit('pause'); resumed.emit('play'); resumed.tick();
+  assert.equal(resumed.switches(), 1, 'No switch while resume still shows original');
+  resumed.label(null); resumed.tick();
+  resumed.label('自动（原画）'); resumed.tick();
+  assert.equal(resumed.switches(), 2, 'Delayed automatic mode must trigger a new switch even at original quality');
+  resumed.requests[0].resolve({ code: 0 }); await flush();
+  assert.equal(resumed.state.pending, true, 'Old callback must not clear resume request');
+  resumed.label('原画'); resumed.tick(2000); assert.equal(resumed.state.done, true);
+  resumed.emit('pause'); resumed.label('自动'); resumed.emit('play'); resumed.tick();
+  assert.equal(resumed.switches(), 3, 'A second pause/resume must also recover');
+  for (let i = 0; i < 5; i++) resumed.tick(10000);
+  assert.equal(resumed.state.done, true); assert.equal(resumed.state.attempts, 5);
+  const bounded = resumed.switches(); resumed.tick(20000); assert.equal(resumed.switches(), bounded);
+
+  const manual = confirmed(); manual.label('1080P 蓝光'); manual.emit('pause');
+  manual.label('自动'); manual.emit('play'); manual.tick(); assert.equal(manual.switches(), 1);
+  const duringPause = confirmed(); duringPause.emit('pause'); duringPause.label('1080P 蓝光');
+  duringPause.emit('play'); duringPause.tick(); assert.equal(duringPause.switches(), 1);
+  duringPause.label('自动'); duringPause.tick(); assert.equal(duringPause.switches(), 1);
+  const noResume = confirmed(); noResume.label('自动'); noResume.tick(); assert.equal(noResume.switches(), 1);
+  const preview = confirmed(); preview.emit('pause', {}); preview.emit('play', {});
+  preview.label('自动'); preview.tick(); assert.equal(preview.switches(), 1);
+  const expired = confirmed(); expired.emit('pause'); expired.emit('play'); expired.tick(16000);
+  expired.label('自动'); expired.tick(); assert.equal(expired.switches(), 1);
+  const changedRoom = confirmed(); changedRoom.emit('pause'); changedRoom.context.location.pathname = '/2';
+  changedRoom.emit('play'); changedRoom.tick();
+  assert.equal(changedRoom.state.resumeUntil, 0); assert.equal(changedRoom.state.pausedOriginal, false);
+  assert.equal(changedRoom.switches(), 2);
+  console.log('PASS: pause/resume recovery, delayed auto label, repeated resumes, stale callbacks, bounded retries, manual quality, preview isolation and room reset');
   for (const label of [null, '', '自动（原画）', '1080P 蓝光', '正在切换到原画', '原画（自动）']) {
     const uncertain = setup({ label }); uncertain.info.quality = '10000'; uncertain.tick(2000);
     assert.equal(uncertain.state.done, false, `Must not confirm label: ${label}`);
@@ -91,13 +130,13 @@ async function run() {
   for (const label of ['原画', '1080P 原画（高帧率）', '原画(高帧率)', '  原画  ']) {
     const explicit = setup({ label }); explicit.info.quality = '10000'; explicit.tick(2000);
     assert.equal(explicit.state.done, true, `Must confirm original label: ${label}`);
-    assert.equal(explicit.context.document.documentElement.dataset.biliAutoOriginal, '2.2.1:confirmed:10000');
+    assert.equal(explicit.context.document.documentElement.dataset.biliAutoOriginal, '2.2.2:confirmed:10000');
   }
   const mismatched = setup({ label: '原画' }); mismatched.tick(2000); assert.equal(mismatched.state.done, false);
   const unavailable = setup({ label: null }); unavailable.info.quality = '10000';
   for (let i = 0; i < 5; i++) unavailable.tick(5000);
   assert.equal(unavailable.state.attempts, 5); assert.equal(unavailable.state.done, true);
-  assert.equal(unavailable.context.document.documentElement.dataset.biliAutoOriginal, '2.2.1:failed');
+  assert.equal(unavailable.context.document.documentElement.dataset.biliAutoOriginal, '2.2.2:failed');
   console.log('PASS: confirmation requires explicit original label and matching quality; missing/empty/auto/unknown labels never confirm; retries remain bounded');
   let s = setup();
   s.fault(true); const before = s.reads(); s.tick(5000);
@@ -123,7 +162,7 @@ async function run() {
   s.requests[1].reject(Error('old room')); await flush(); assert.equal(s.state.pending, true);
   for (let i = 0; i < 5; i++) s.tick(10000);
   assert.equal(s.state.attempts, 5); assert.equal(s.state.done, true); assert.equal(s.state.pending, false);
-  assert.equal(s.context.document.documentElement.dataset.biliAutoOriginal, '2.2.1:failed');
+  assert.equal(s.context.document.documentElement.dataset.biliAutoOriginal, '2.2.2:failed');
   s.requests[2].resolve({ code: 0 }); await flush(); assert.equal(s.state.pending, false);
   const completed = setup({ promise: true }); completed.info.quality = '10000'; completed.tick(2000);
   assert.equal(completed.state.done, true); assert.equal(completed.state.pending, false);

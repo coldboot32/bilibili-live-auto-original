@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哔哩哔哩直播自动原画（精简版）
 // @namespace    local.bilibili.auto-original
-// @version      2.2.1
+// @version      2.2.2
 // @author       coldboot32
 // @license      MIT
 // @description  静默选择原画，并在播放器统计面板显示音视频分片平均码率。
@@ -41,14 +41,32 @@ SOFTWARE.
   if (window[KEY]) return;
   const state = { player: null, path: '', done: false, attempts: 0,
     lastAttempt: 0, interfaceWaitStart: null, interfaceWaitWarned: false,
-    errorCount: 0, pending: false, request: null, generation: 0, panelErrorAt: null };
+    errorCount: 0, pending: false, request: null, generation: 0, panelErrorAt: null,
+    pausedOriginal: false, resumeUntil: 0 };
   window[KEY] = state;
   // 码率统计必须在播放器创建 SourceBuffer 之前安装。
   const updateBitratePanel = installBitratePanel();
   const report = value => {
-    if (document.documentElement) document.documentElement.dataset.biliAutoOriginal = '2.2.1:' + value;
+    if (document.documentElement) document.documentElement.dataset.biliAutoOriginal = '2.2.2:' + value;
   };
   report('started');
+
+  const qualityLabel = () => document.querySelector('#live-player .selected-qn')?.textContent?.trim();
+  const isOriginal = label => typeof label === 'string' &&
+    /^(?:\d+P\s*)?原画(?:\s*[（(][^）)]*[）)])?$/i.test(label) && !/自动/.test(label);
+  // 媒体事件不冒泡，使用捕获监听；只处理当前主播放器。
+  for (const eventName of ['pause', 'play']) document.addEventListener(eventName, event => {
+    if (event.target !== document.querySelector('#live-player video') ||
+        state.player !== unsafeWindow.livePlayer || state.path !== location.pathname) return;
+    if (eventName === 'pause') {
+      state.pausedOriginal = state.done && isOriginal(qualityLabel());
+      state.resumeUntil = 0;
+    } else {
+      // 画质标签可能晚于 play 事件更新，留出 15 秒观察窗口。
+      state.resumeUntil = state.pausedOriginal ? Date.now() + 15000 : 0;
+      state.pausedOriginal = false;
+    }
+  }, true);
 
   function tick() {
     if (!/^\/\d+\/?$/.test(location.pathname)) return;
@@ -56,11 +74,24 @@ SOFTWARE.
     if (player !== state.player || location.pathname !== state.path) {
       Object.assign(state, { player, path: location.pathname, done: false,
         attempts: 0, lastAttempt: 0, interfaceWaitStart: null, interfaceWaitWarned: false,
-        errorCount: 0, pending: false, request: null, generation: state.generation + 1 });
+        errorCount: 0, pending: false, request: null, generation: state.generation + 1,
+        pausedOriginal: false, resumeUntil: 0 });
       report('waiting');
     }
-    if (state.done) return;
     try {
+      if (state.done) {
+        if (!state.resumeUntil) return;
+        if (Date.now() > state.resumeUntil) { state.resumeUntil = 0; return; }
+        const label = qualityLabel();
+        if (!label || isOriginal(label)) return;
+        state.resumeUntil = 0;
+        // 保留明确的手动画质选择，仅恢复从原画退回自动的情况。
+        if (!/自动/.test(label)) return;
+        Object.assign(state, { done: false, attempts: 0, lastAttempt: 0,
+          pending: false, request: null, generation: state.generation + 1,
+          interfaceWaitStart: null, interfaceWaitWarned: false, errorCount: 0 });
+        report('resume-auto');
+      }
       if (!player || typeof player.getPlayerInfo !== 'function' ||
           (typeof player.switchQualityAsync !== 'function' && typeof player.switchQuality !== 'function')) {
         if (state.interfaceWaitStart === null) state.interfaceWaitStart = Date.now();
@@ -80,10 +111,9 @@ SOFTWARE.
       if (!target) { report('original-unavailable'); return; }
 
       const now = Date.now();
-      const label = document.querySelector('#live-player .selected-qn')?.textContent?.trim();
+      const label = qualityLabel();
       // 标签缺失或含义不明时不能推断已退出自动模式，必须明确显示原画。
-      const originalSelected = typeof label === 'string' &&
-        /^(?:\d+P\s*)?原画(?:\s*[（(][^）)]*[）)])?$/i.test(label) && !/自动/.test(label);
+      const originalSelected = isOriginal(label);
       // 即使自动模式恰好播放原画，也先调用一次接口，明确选择原画。
       if (state.attempts > 0 && now - state.lastAttempt >= 2000 &&
           Number(info.quality) === Number(target.qn) && originalSelected) {
